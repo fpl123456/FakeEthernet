@@ -5,6 +5,8 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 
+import java.util.ArrayList;
+
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XSharedPreferences;
@@ -80,6 +82,7 @@ public class MainHook implements IXposedHookLoadPackage {
         hookConnectivityManager();
         hookNetworkInfoMethods();
         hookNetworkCapabilities();
+        hookWifiManager(lpparam.classLoader);
     }
 
     private boolean isEnabled() {
@@ -113,6 +116,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         if (!isEnabled()) return;
                         NetworkInfo info = (NetworkInfo) param.getResult();
                         if (isWifiNetworkInfo(info)) {
+                            XposedBridge.log(TAG + ": Hooked getActiveNetworkInfo()");
                             param.setResult(buildFakeNetworkInfo(info));
                         }
                     }
@@ -196,6 +200,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         if (!isEnabled()) return;
                         NetworkCapabilities nc = (NetworkCapabilities) param.getResult();
                         if (nc != null && isWifiCapabilities(nc)) {
+                            XposedBridge.log(TAG + ": Hooked getNetworkCapabilities()");
                             param.setResult(buildFakeNetworkCapabilities(nc));
                         }
                     }
@@ -225,13 +230,14 @@ public class MainHook implements IXposedHookLoadPackage {
                     }
                 });
 
-        // getTypeName() → "WIFI" → "ETHERNET"
+        // getTypeName() → "WIFI" / "Wi-Fi" / "WiFi" → "ETHERNET"
         XposedHelpers.findAndHookMethod(NetworkInfo.class, "getTypeName",
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) {
                         if (!isEnabled()) return;
-                        if ("WIFI".equals(param.getResult())) {
+                        String name = (String) param.getResult();
+                        if (name != null && name.toUpperCase().contains("WIFI")) {
                             param.setResult("ETHERNET");
                         }
                     }
@@ -336,26 +342,94 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     // ============================================================
+    // Layer 4: WifiManager hooks — suppress Wi-Fi detection
+    // ============================================================
+
+    private void hookWifiManager(ClassLoader cl) {
+        try {
+            // getConnectionInfo() → return null (no Wi-Fi connection)
+            XposedHelpers.findAndHookMethod("android.net.wifi.WifiManager", cl,
+                    "getConnectionInfo",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (!isEnabled()) return;
+                            if (param.getResult() != null) {
+                                XposedBridge.log(TAG + ": WifiManager.getConnectionInfo() → null");
+                                param.setResult(null);
+                            }
+                        }
+                    });
+
+            // isWifiEnabled() → return false
+            XposedHelpers.findAndHookMethod("android.net.wifi.WifiManager", cl,
+                    "isWifiEnabled",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (!isEnabled()) return;
+                            param.setResult(false);
+                        }
+                    });
+
+            // getWifiState() → WIFI_STATE_DISABLED (1)
+            XposedHelpers.findAndHookMethod("android.net.wifi.WifiManager", cl,
+                    "getWifiState",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (!isEnabled()) return;
+                            param.setResult(1); // WIFI_STATE_DISABLED
+                        }
+                    });
+
+            // getScanResults() → empty list
+            XposedHelpers.findAndHookMethod("android.net.wifi.WifiManager", cl,
+                    "getScanResults",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            if (!isEnabled()) return;
+                            param.setResult(new ArrayList<>());
+                        }
+                    });
+
+            XposedBridge.log(TAG + ": WifiManager hooks installed");
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": WifiManager hook failed: " + e.getMessage());
+        }
+    }
+
+    // ============================================================
     // Helper: check network type
     // ============================================================
 
-    /** Check if NetworkInfo represents WiFi — uses getTypeName to avoid hook recursion */
+    /**
+     * Check if NetworkInfo represents WiFi.
+     * MUST read raw internal field to avoid triggering our own getType()/getTypeName hooks.
+     */
     private boolean isWifiNetworkInfo(NetworkInfo info) {
         if (info == null) return false;
-        // Use getTypeName() which is less likely to be in a recursive chain
-        return "WIFI".equals(info.getTypeName());
+        try {
+            int type = XposedHelpers.getIntField(info, "mNetworkType");
+            return type == TYPE_WIFI;
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": isWifiNetworkInfo raw read failed, fallback: " + e.getMessage());
+            try {
+                return info.getType() == TYPE_WIFI;
+            } catch (Exception e2) {
+                return false;
+            }
+        }
     }
 
-    /** Check if NetworkCapabilities has WiFi transport — with recursion guard */
+    /**
+     * Check if NetworkCapabilities has WiFi transport.
+     * MUST use raw bitmask to avoid triggering our own hasTransport hook.
+     */
     private boolean isWifiCapabilities(NetworkCapabilities nc) {
         if (nc == null) return false;
-        if (inHook.get()) return false;
-        inHook.set(true);
-        try {
-            return nc.hasTransport(TRANSPORT_WIFI);
-        } finally {
-            inHook.set(false);
-        }
+        return isWifiByBitmask(nc);
     }
 
     /** Check WiFi transport by reading raw internal bitmask (bypasses hasTransport hook) */
@@ -387,6 +461,7 @@ public class MainHook implements IXposedHookLoadPackage {
             try {
                 XposedHelpers.callMethod(fake, "setRoaming", original.isRoaming());
             } catch (Exception ignored) {}
+            XposedBridge.log(TAG + ": Faked NetworkInfo → ETHERNET");
             return fake;
         } catch (Exception e) {
             XposedBridge.log(TAG + ": buildFakeNetworkInfo failed: " + e.getMessage());
@@ -414,6 +489,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 XposedBridge.log(TAG + ": set bandwidth via reflection failed: " + e.getMessage());
             }
 
+            XposedBridge.log(TAG + ": Faked NetworkCapabilities → ETHERNET, bw=" + bw + " kbps");
             return fake;
         } catch (Exception e) {
             XposedBridge.log(TAG + ": buildFakeNetworkCapabilities failed: " + e.getMessage());
