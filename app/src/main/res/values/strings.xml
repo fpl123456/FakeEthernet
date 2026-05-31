@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FakeEthernet</string>
+    <string name="module_description">将 WiFi 伪装为有线（Ethernet）网络接入</string>
+
+    <string-array name="xposed_scope">
+        <item>system</item>
+    </string-array>
+
+    <string-array name="bandwidth_entries">
+        <item>50 Mbps</item>
+        <item>100 Mbps</item>
+        <item>500 Mbps</item>
+        <item>1 Gbps</item>
+    </string-array>
+
+    <string-array name="bandwidth_values">
+        <item>0</item>
+        <item>1</item>
+        <item>2</item>
+        <item>3</item>
+    </string-array>
+</resources>

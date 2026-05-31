@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+    <SwitchPreference
+        android:defaultValue="true"
+        android:key="enabled"
+        android:summary="启用 WiFi 伪装为以太网"
+        android:title="启用模块" />
+    <ListPreference
+        android:defaultValue="1"
+        android:entries="@array/bandwidth_entries"
+        android:entryValues="@array/bandwidth_values"
+        android:key="fake_bandwidth"
+        android:summary="选择伪装的有线网络带宽"
+        android:title="伪装带宽" />
+</PreferenceScreen>
