@@ -376,10 +376,17 @@ public class MainHook implements IXposedHookLoadPackage {
     private NetworkInfo buildFakeNetworkInfo(NetworkInfo original) {
         try {
             NetworkInfo fake = new NetworkInfo(TYPE_ETHERNET, 0, "ETHERNET", "");
-            fake.setState(original.getState());
+            // Use reflection for @hide / @SystemApi methods
+            try {
+                XposedHelpers.callMethod(fake, "setState", original.getState());
+            } catch (Exception ignored) {}
             fake.setDetailedState(original.getDetailedState(), null, null);
-            fake.setIsAvailable(original.isAvailable());
-            fake.setRoaming(original.isRoaming());
+            try {
+                XposedHelpers.callMethod(fake, "setIsAvailable", original.isAvailable());
+            } catch (Exception ignored) {}
+            try {
+                XposedHelpers.callMethod(fake, "setRoaming", original.isRoaming());
+            } catch (Exception ignored) {}
             return fake;
         } catch (Exception e) {
             XposedBridge.log(TAG + ": buildFakeNetworkInfo failed: " + e.getMessage());
@@ -389,47 +396,25 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private NetworkCapabilities buildFakeNetworkCapabilities(NetworkCapabilities original) {
         try {
-            NetworkCapabilities.Builder builder = new NetworkCapabilities.Builder();
+            // Clone via public constructor, then modify internal fields via reflection
+            NetworkCapabilities fake = new NetworkCapabilities(original);
 
-            // Add all capabilities from original via public API
-            for (int cap : KNOWN_CAPABILITIES) {
-                try {
-                    if (original.hasCapability(cap)) {
-                        builder.addCapability(cap);
-                    }
-                } catch (Exception ignored) {
-                    // Capability constant may not exist on this API level
-                }
-            }
+            // Swap transport bits: clear WIFI, set ETHERNET
+            long transportTypes = XposedHelpers.getLongField(fake, "mTransportTypes");
+            transportTypes &= ~(1L << TRANSPORT_WIFI);   // clear WIFI bit
+            transportTypes |= (1L << TRANSPORT_ETHERNET); // set ETHERNET bit
+            XposedHelpers.setLongField(fake, "mTransportTypes", transportTypes);
 
-            // Add transports: all original except WIFI, plus ETHERNET
-            int[] allTransports = {
-                    NetworkCapabilities.TRANSPORT_CELLULAR,
-                    NetworkCapabilities.TRANSPORT_WIFI,
-                    NetworkCapabilities.TRANSPORT_BLUETOOTH,
-                    NetworkCapabilities.TRANSPORT_ETHERNET,
-                    NetworkCapabilities.TRANSPORT_VPN,
-                    5, // TRANSPORT_WIFI_AWARE (API 26)
-                    6, // TRANSPORT_LOWPAN (API 26)
-                    7, // TRANSPORT_USB (API 33+)
-            };
-            for (int t : allTransports) {
-                try {
-                    if (original.hasTransport(t) && t != TRANSPORT_WIFI) {
-                        builder.addTransport(t);
-                    }
-                } catch (Exception ignored) {
-                }
-            }
-            // Always add Ethernet
-            builder.addTransport(TRANSPORT_ETHERNET);
-
-            // Set bandwidth
+            // Set bandwidth via reflection on internal fields
             int bw = getFakeBandwidthKbps();
-            builder.setLinkDownstreamBandwidthKbps(bw);
-            builder.setLinkUpstreamBandwidthKbps(bw / 2);
+            try {
+                XposedHelpers.setIntField(fake, "mLinkDownBandwidth", bw);
+                XposedHelpers.setIntField(fake, "mLinkUpBandwidth", bw / 2);
+            } catch (Exception e) {
+                XposedBridge.log(TAG + ": set bandwidth via reflection failed: " + e.getMessage());
+            }
 
-            return builder.build();
+            return fake;
         } catch (Exception e) {
             XposedBridge.log(TAG + ": buildFakeNetworkCapabilities failed: " + e.getMessage());
             return original;
